@@ -1,0 +1,18 @@
+[Unit]
+Description=Resize AMD Vega II GPU BAR0 to 32GB via rebar setpci
+# Run early, before display manager and GPU workloads
+DefaultDependencies=no
+After=sysinit.target
+Before=display-manager.service graphical.target multi-user.target
+
+[Service]
+Type=oneshot
+# --force skips the y/N confirmation prompt
+ExecStart=/usr/local/sbin/resize_gpu_bars.sh --force
+RemainAfterExit=yes
+TimeoutStartSec=120
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
