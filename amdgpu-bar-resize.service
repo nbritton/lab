@@ -1,54 +1,62 @@
 # /etc/systemd/system/resize-gpu-bars.service
 #
-# Resizes AMD Radeon Pro Vega II Duo BAR0 from 256 MB → 32 GB on MacPro7,1 (Mac Pro 2019)
-# via direct setpci rebar writes + PCI subtree remove/rescan.
+# Resizes AMD Radeon Pro Vega II Duo BAR0 from 256 MB → 32 GB on MacPro7,1
+# via direct setpci rebar writes + PCI subtree remove/rescan + modprobe.
+#
+# PREREQUISITES:
+#   /etc/modprobe.d/amdgpu-blacklist.conf must be installed to prevent
+#   amdgpu from autoloading before this service runs. Without it, amdgpu
+#   loads at boot with 256 MB BARs, then this service tears it down and
+#   reloads — the double KFD init/teardown corrupts /dev/kfd state.
 #
 # Install:
+#   cp amdgpu-blacklist.conf /etc/modprobe.d/amdgpu-blacklist.conf
 #   cp resize_gpu_bars.sh /usr/local/sbin/resize_gpu_bars.sh
 #   chmod 755 /usr/local/sbin/resize_gpu_bars.sh
 #   cp resize-gpu-bars.service /etc/systemd/system/
 #   systemctl daemon-reload
 #   systemctl enable resize-gpu-bars.service
+#   update-initramfs -u          # Regenerate initramfs with the new blacklist
+#   reboot
 #
 # Verify:
 #   systemctl status resize-gpu-bars.service
 #   journalctl -u resize-gpu-bars.service -b
+#   rocminfo
 
 [Unit]
-Description=Resize AMD Vega II Duo GPU BAR0 to 32 GB via rebar setpci (MacPro7,1)
+Description=Resize AMD Vega II Duo GPU BAR0 to 32 GB and load amdgpu (MacPro7,1)
 
 # ---------------------------------------------------------------------------
 # Ordering: run as early as possible but after the prerequisites the script
 # actually touches are available.
 # ---------------------------------------------------------------------------
 
-# Disable the implicit Requires/After on sysinit.target, basic.target, etc.
-# so we can slot in right after the narrow set of targets we truly need.
 DefaultDependencies=no
 
 # What we need before we can run:
 #   sysinit.target       — /proc, /sys, cgroups, early mounts are up
-#   local-fs.target      — /usr is mounted (setpci, lspci, numfmt, dmesg live there)
+#   local-fs.target      — /usr is mounted (setpci, lspci, modprobe live there)
 #   systemd-udevd.service — udev is running so /sys/bus/pci/devices/* are populated
-#   systemd-modules-load.service — kernel modules (pciutils, etc.) are loaded
+#   systemd-modules-load.service — kernel modules are loaded (but NOT amdgpu, it's blacklisted)
 Requires=local-fs.target sysinit.target systemd-udevd.service
 After=sysinit.target local-fs.target systemd-udevd.service systemd-modules-load.service
 
 # What must wait for us to finish:
-#   display-manager.service — GDM/SDDM/LightDM (loads amdgpu for Xorg/Wayland)
+#   display-manager.service — GDM/SDDM/LightDM (needs amdgpu for display)
 #   graphical.target        — full desktop session
 #   multi-user.target       — all normal services
 Before=display-manager.service graphical.target multi-user.target
 
-# If the amdgpu module is loaded before we run, the driver will claim the
-# GPUs and we can't resize.  Block the module-autoload path.
+# If the amdgpu module somehow loads before we run, the driver will claim the
+# GPUs with 256 MB BARs. With the blacklist file installed, this shouldn't happen.
 Before=modprobe@amdgpu.service
 
 # Informational — we want udev but won't fail hard if ordering is odd.
 Wants=systemd-udevd.service
 
 # Don't let a failure here block the rest of boot.
-# The GPUs will just stay at 256 MB BARs (functional, just slower).
+# The script's EXIT trap will still load amdgpu as a fallback (256 MB BARs).
 FailureAction=none
 
 [Service]
@@ -62,30 +70,26 @@ ExecStartPre=/usr/bin/udevadm settle --timeout=30
 # --force skips the interactive y/N prompt (required for headless boot).
 ExecStart=/usr/local/sbin/resize_gpu_bars.sh --force
 
-# Mark the service as "active (exited)" after success so systemd knows
-# the one-shot work is done and dependents can proceed.
+# Mark the service as "active (exited)" after success.
 RemainAfterExit=yes
 
-# The script sleeps 15 s for PCI rescan + 2 s after unbind + general
-# setpci work.  180 s gives plenty of headroom for slow enumeration.
+# Budget: ~5s udev settle + ~3s remove + ~5s rescan + ~15s driver init + margin.
 TimeoutStartSec=180
 
-# Capabilities — the script needs raw PCI config-space access and the
-# ability to write to sysfs remove/rescan files.
-# Running as root is simplest, but lock down everything else.
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_RAWIO CAP_DAC_OVERRIDE
-AmbientCapabilities=CAP_SYS_ADMIN CAP_SYS_RAWIO
+# Capabilities — needs PCI config-space access, sysfs writes, AND module loading.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_RAWIO CAP_DAC_OVERRIDE CAP_SYS_MODULE
+AmbientCapabilities=CAP_SYS_ADMIN CAP_SYS_RAWIO CAP_SYS_MODULE
 
 # Hardening — restrict what the service can touch beyond PCI.
 ProtectHome=yes
 ProtectSystem=strict
-ReadWritePaths=/sys/bus/pci
+ReadWritePaths=/sys/bus/pci /sys/devices
 PrivateTmp=yes
 NoNewPrivileges=yes
 ProtectKernelTunables=no
 ProtectKernelModules=no
 
-# Logging — everything goes to the journal for post-boot debugging.
+# Logging
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=resize-gpu-bars
