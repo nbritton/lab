@@ -340,7 +340,7 @@ phase3_verify() {
     # Check peer mapping
     echo "" >&2
     local new_peer_errors
-    new_peer_errors=$(dmesg | tail -200 | grep -c "Failed to map peer" || echo "0")
+    new_peer_errors=$(dmesg | tail -200 | grep -c "Failed to map peer" || true)
     if (( new_peer_errors == 0 )); then
         log_ok "No recent peer mapping errors!"
     else
@@ -369,8 +369,8 @@ main() {
 
     echo "" >&2
     echo "╔════════════════════════════════════════════════════════════╗" >&2
-    echo "║    AMD Vega II BAR Resize v3 — Mac Pro 7,1               ║" >&2
-    echo "║    Direct setpci rebar + PCI subtree reset approach      ║" >&2
+    echo "║    AMD Vega II BAR Resize v3 — Mac Pro 7,1                 ║" >&2
+    echo "║    Direct setpci rebar + PCI subtree reset approach        ║" >&2
     echo "╚════════════════════════════════════════════════════════════╝" >&2
 
     phase1_diagnose
